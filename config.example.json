@@ -1,0 +1,79 @@
+{
+  "timezone": "Europe/Kyiv",
+  "horizon": "next_week",
+  "days_back": 7,
+  "send_to_saved": true,
+  "moodle_url": "https://moodle.your-university.edu",
+  "subjects": {
+    "Higher Mathematics": [
+      "вища математика",
+      "вищої математики",
+      "вишмат",
+      "вышмат",
+      "матан",
+      "math"
+    ],
+    "Programming": [
+      "програмування",
+      "программирование",
+      "прога",
+      "programming"
+    ],
+    "Physics": [
+      "фізика",
+      "фізики",
+      "физика",
+      "физики",
+      "physics"
+    ],
+    "English": [
+      "англійська",
+      "англійської",
+      "английский",
+      "english"
+    ]
+  },
+  "telegram": {
+    "chats": [
+      {
+        "chat": -1001234567890,
+        "subject": "Higher Mathematics",
+        "name": "Group: Higher Mathematics",
+        "short": "Math"
+      },
+      {
+        "chat": -1001234567891,
+        "subject": "Programming",
+        "name": "Group: Programming",
+        "short": "Programming"
+      },
+      {
+        "chat": -1001234567892,
+        "subject": null,
+        "name": "Group general chat",
+        "short": "Group"
+      }
+    ]
+  },
+  "education": {
+    "path": "~/Education",
+    "owner_names": [
+      "Petrenko",
+      "Петренко"
+    ],
+    "folders": {
+      "01 Higher Mathematics": "Higher Mathematics",
+      "02 Programming": "Programming",
+      "03 Physics": "Physics",
+      "04 English": "English"
+    },
+    "ignore": [
+      "Manuals",
+      "Syllabus",
+      "Lectures",
+      "Certificates",
+      "Task Photos",
+      "Old Versions"
+    ]
+  }
+}

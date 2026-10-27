@@ -1,0 +1,164 @@
+"""Telegram through your own account (Telethon / MTProto).
+
+Tasks are taken only from chat admins (teacher, class representative), anonymous posts made on
+behalf of the group, and channel posts. Messages from other students are ignored. Messages from
+one author sent in a row (within 30 min) are glued together with their file names, because a
+teacher often writes "This is the assignment for the test" and then posts the pdf separately.
+Your own messages with files in all chats are also read, to hide work you already submitted.
+"""
+
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+
+from .config import Config
+from .models import TELEGRAM, Notice, Submission, Task
+from .textitems import text_to_item
+from .textparse import ASSIGNMENT_RE
+
+GROUP_GAP = timedelta(minutes=30)  # a teacher's text, files and clarifications during one class
+SUBMISSIONS_DAYS = 14
+
+
+@dataclass
+class Post:
+    sender_id: int | None
+    first: datetime
+    last: datetime
+    msg_id: int
+    texts: list[str] = field(default_factory=list)
+    files: list[str] = field(default_factory=list)
+
+    def text(self) -> str:
+        return "\n".join([*self.texts, *(f"📎 {f}" for f in self.files)])
+
+
+def _file_name(msg) -> str | None:
+    if not msg.file or msg.sticker or msg.gif:
+        return None
+    return msg.file.name or None
+
+
+async def _admin_ids(client, entity) -> set[int]:
+    from telethon.tl.types import ChannelParticipantsAdmins
+
+    try:
+        return {u.id for u in await client.get_participants(entity, filter=ChannelParticipantsAdmins)}
+    except Exception:  # noqa: BLE001 - admin list is unavailable without rights
+        return set()
+
+
+async def collect(api_id: int, api_hash: str, session: str, cfg: Config, now: datetime, warn
+                  ) -> tuple[list[Task], list[Notice], list[Submission]]:
+    from telethon import TelegramClient, utils
+
+    tasks: list[Task] = []
+    notices: list[Notice] = []
+    since = now - timedelta(days=cfg.days_back)
+
+    async with TelegramClient(session, api_id, api_hash) as client:  # the first run asks for phone and code
+        for entry in cfg.telegram_chats:
+            try:
+                entity = await _resolve(client, entry["chat"])
+            except Exception as e:  # noqa: BLE001
+                warn(f"Telegram: chat \"{entry.get('name', entry['chat'])}\" not found ({e})")
+                continue
+            chat_name = entry.get("short") or entry.get("name") or getattr(entity, "title", "?")
+            chat_id = utils.get_peer_id(entity)
+            broadcast = bool(getattr(entity, "broadcast", False))
+            admins = await _admin_ids(client, entity)
+
+            posts: list[Post] = []
+            async for msg in client.iter_messages(entity):
+                if msg.date < since:
+                    break
+                # if no admins are visible, take everyone; the strict keyword filter still applies
+                official = (broadcast or msg.post or not admins or msg.sender_id in admins
+                            or msg.sender_id == chat_id)
+                if not official or msg.via_bot_id:
+                    continue
+                p = Post(msg.sender_id, msg.date, msg.date, msg.id)
+                if msg.message:
+                    p.texts.append(msg.message)
+                if name := _file_name(msg):
+                    p.files.append(name)
+                if p.texts or p.files:
+                    posts.append(p)
+
+            # glue messages sent in a row by one author (walk in chronological order)
+            merged: list[Post] = []
+            last_of: dict[int | None, Post] = {}
+            for p in reversed(posts):
+                prev = last_of.get(p.sender_id)
+                if prev and p.first - prev.last <= GROUP_GAP:
+                    prev.texts += p.texts
+                    prev.files += p.files
+                    prev.last = p.first
+                else:
+                    merged.append(p)
+                    last_of[p.sender_id] = p
+
+            username = getattr(entity, "username", None)
+            for p in merged:
+                text = p.text()
+                url = f"https://t.me/{username}/{p.msg_id}" if username else None
+                item = text_to_item(text, p.first, TELEGRAM, cfg, fixed_subject=entry.get("subject"), url=url,
+                                    keep_undated=True, strict=True)
+                if isinstance(item, Notice):
+                    notices.append(item)
+                elif item is not None:
+                    file = next((f for f in p.files if ASSIGNMENT_RE.search(f.replace("_", " "))), None)
+                    if file and file.lower() not in item.title.lower():
+                        item.title = f"{item.title} 📎 {file}"
+                    item.origin = chat_name
+                    item.match_text = text
+                    tasks.append(item)
+
+        submissions = await _my_submissions(client, now - timedelta(days=SUBMISSIONS_DAYS))
+
+    return tasks, notices, submissions
+
+
+async def _my_submissions(client, since: datetime) -> list[Submission]:
+    """Your messages with files in all groups and private chats (submitted work)."""
+    out: list[Submission] = []
+    async for dialog in client.iter_dialogs():
+        if dialog.is_channel and not dialog.is_group:
+            continue  # you do not submit work to channels
+        if dialog.date and dialog.date < since:
+            continue  # nothing new in this chat, so no submissions either
+        try:
+            async for msg in client.iter_messages(dialog.entity, from_user="me"):
+                if msg.date < since:
+                    break
+                if msg.fwd_from:
+                    continue  # a forward (e.g. a teacher's manual) is not your submission
+                if name := _file_name(msg):
+                    out.append(Submission(msg.date, f"{msg.message or ''} {name}", f"TG · {dialog.name}"))
+        except Exception:  # noqa: BLE001 - one unavailable chat must not break the whole run
+            continue
+    return out
+
+
+async def _resolve(client, chat):
+    if isinstance(chat, int) or (isinstance(chat, str) and (chat.startswith("@") or chat.lstrip("-").isdigit())):
+        return await client.get_entity(int(chat) if str(chat).lstrip("-").isdigit() else chat)
+    async for dialog in client.iter_dialogs():
+        if dialog.name == chat:
+            return dialog.entity
+    raise LookupError("no dialog with this name")
+
+
+async def send_to_saved(api_id: int, api_hash: str, session: str, text: str) -> None:
+    """Sends the text to your own Saved Messages, nobody else."""
+    from telethon import TelegramClient
+
+    async with TelegramClient(session, api_id, api_hash) as client:
+        # Telegram limit is 4096 characters; split by lines
+        chunk = ""
+        for line in text.split("\n"):
+            if len(chunk) + len(line) + 1 > 4000:
+                await client.send_message("me", chunk, parse_mode="html", link_preview=False)
+                chunk = ""
+            chunk += line + "\n"
+        if chunk.strip():
+            await client.send_message("me", chunk, parse_mode="html", link_preview=False)

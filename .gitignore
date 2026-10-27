@@ -1,0 +1,18 @@
+# Personal data: never commit
+.env
+config.json
+my_tasks.json
+*.session
+*.session-journal
+credentials.json
+google_token.json
+*-token
+*.token
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
