@@ -30,8 +30,8 @@ def _similar(a: Task, b: Task) -> bool:
 # Kind of work: "ргр-1" and "Только ргр" (both "RGR", a calculation-graphic assignment) are the same
 # task even though the wording differs. Keys are internal labels; patterns match Ukrainian/Russian.
 _KINDS = {
-    "ргр": r"ргр", "мкр": r"мкр", "кп": r"кп", "лаба": r"лаб\w*", "тест": r"тест\w*",
-    "конспект": r"конспект\w*", "практична": r"практи\w*", "самостійна": r"самостійн\w*",
+    "ргр": r"ргр", "мкр": r"мкр", "кп": r"кп", "лаба": r"лаб\w*|лр", "тест": r"тест\w*",
+    "конспект": r"конспект\w*", "практична": r"практи\w*|пр", "самостійна": r"самостійн\w*",
     "презентація": r"презентаці\w*", "реферат": r"реферат\w*",
 }
 _KIND_RES = {k: re.compile(r"(?<!\w)(" + v + r")(?!\w)", re.IGNORECASE) for k, v in _KINDS.items()}

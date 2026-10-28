@@ -65,20 +65,37 @@ def has_keyword(text: str) -> bool:
 
 # For undated messages "до" ("until") and "включно" ("inclusive") are too generic, so an explicit
 # assignment word is required (homework, lab, essay, draw, solve...). "КП-51" is a group code,
-# not "КП" (computer practicum).
+# not "КП" (computer practicum). "4 пр", "пр 4", "ЛР 3" are short forms of practical/lab work,
+# common in file names a teacher posts without any text.
 ASSIGNMENT_RE = re.compile(
     r"(?<!\w)(дз|д/з|домашн\w*|завдан\w*|задани\w*|здати|здаємо|здавати|сдать|сдавать|лаб\w*|кп(?!-\d)|ргр|"
     r"практичн\w*|практическ\w*|самостійн\w*|самостійно|контрольн\w*|реферат\w*|презентаці\w*|презентации|"
     r"конспект\w*|задач\w*|вправ\w*|номер\w*|№|classtime|тест\w*|дедлайн\w*|термін\w*|включно|"
     r"накреслит\w*|креслит\w*|виконат\w*|зробит\w*|підготуват\w*|опрацюван\w*|опрацюват\w*|розв'?язат\w*|"
-    r"вивчит\w*|прочитат\w*|делать|сделать|подготовить)(?!\w)",
+    r"вивчит\w*|прочитат\w*|делать|сделать|подготовить|"
+    r"(?:пр|лр)\.?\s*№?\s*\d{1,2}|\d{1,2}\s*(?:пр|лр))(?!\w)",
     re.IGNORECASE,
 )
 
 
+# For a post that is only a file (no assignment words in the text) the file name must name a kind
+# of work. The generic "завдання" is not enough: "Тема_3_Структура_та_завдання_ЗСУ.pdf" is a lecture.
+FILE_TASK_RE = re.compile(
+    r"(?<!\w)(дз|домашн\w*|лаб\w*|кп|ргр|мкр|практичн\w*|самостійн\w*|контрольн\w*|реферат\w*|"
+    r"варіант\w*|вар|(?:пр|лр)\.?\s*№?\s*\d{1,2}|\d{1,2}\s*(?:пр|лр))(?!\w)",
+    re.IGNORECASE,
+)
+
+
+def file_names_task(names: list[str]) -> bool:
+    # "ЛР3_звіт" -> "ЛР 3 звіт"
+    return any(FILE_TASK_RE.search(re.sub(r"(?<=\D)(?=\d)|(?<=\d)(?=\D)", " ", n.replace("_", " ")))
+               for n in names)
+
+
 def looks_like_assignment(text: str) -> bool:
     t = (text or "").strip()
-    if not ASSIGNMENT_RE.search(t):
+    if not ASSIGNMENT_RE.search(t.replace("_", " ")):  # file names: "ЛР3_звіт.pdf"
         return False
     # short questions in a chat ("what's the homework?") are not assignments
     return not (t.endswith("?") and len(t) < 120)

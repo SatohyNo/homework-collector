@@ -37,8 +37,12 @@ only mentioned by a teacher in a Telegram group between dozens of messages like 
    channels) and picks out assignments:
    - only messages from **chat admins** (usually the teacher or the class representative),
      anonymous posts on behalf of the group, and channel posts. Classmates' chatter is ignored;
-   - several messages from one author in a row (within 30 minutes) are glued together, so
-     "This is the assignment for the test" + `rgr1_task.pdf` becomes one task;
+   - several messages from one author in a row (within 30 minutes, in the same topic) are glued
+     together, so "This is the assignment for the test" + `rgr1_task.pdf` becomes one task;
+   - **groups with topics** are supported: in a class group with topics like "Physics", "Math",
+     "Materials science", the subject is taken from the topic name;
+   - a post that is just a file is picked up when the file name names a kind of work
+     (`4 пр.pdf`, `ЛР3_звіт.pdf`, `КП_11.docx`, `РГР1.pdf`);
    - a message must clearly be an assignment (homework, lab, essay, draw, solve, test on
      classtime…). "Join the lesson", Zoom links and grades are skipped;
    - bot messages are skipped.
@@ -375,8 +379,9 @@ Run `python -m dz.setup chats`, copy the lines for the chats you need and fill i
 - `chat`: the id from `dz.setup chats` (a number, usually negative). A `@username` or the exact
   chat title also works.
 - `subject`: one of the names from `subjects`. Use `null` for a **general class chat** about many
-  subjects; then the subject is taken from the message text, and messages without a clear subject
-  are skipped.
+  subjects. Then the subject is taken from the **topic name** (if the group has topics, e.g. a
+  topic called "Вишмат" matches the alias `вишмат`), otherwise from the message text. Messages
+  without a clear subject are skipped. So make sure every topic name appears in some alias list.
 - `name`: for you, any text.
 - `short`: what the "Source" column shows.
 
@@ -461,8 +466,17 @@ week (`horizon`) that you have not submitted. Telegram messages from the last `d
 **What counts as an assignment in Telegram.** The message (with the messages glued to it) must
 contain an assignment word: дз, завдання, здати, лаба, КП, РГР, практична, самостійна, конспект,
 презентація, контрольна, тест, classtime, креслити, виконати, підготувати, розв'язати… (and
-Russian forms). Short questions ("а дз яке?") are skipped. Group codes like "КП-51" are not
-mistaken for "КП". Exercise numbers like `3.2.43` are not mistaken for dates.
+Russian forms), or short forms like "4 пр", "пр 4", "ЛР 3". Short questions ("а дз яке?") are
+skipped. Group codes like "КП-51" are not mistaken for "КП". Exercise numbers like `3.2.43` are
+not mistaken for dates.
+
+**Posts that are only a file.** A teacher or class representative often just forwards a pdf.
+Such a post counts if the **file name** names a kind of work: пр / ЛР with a number, КП, РГР,
+МКР, лаба, практична, самостійна, контрольна, варіант, ДЗ. A generic word like "завдання" in a
+file name is not enough, because lecture files are often called "Topic 3: structure and tasks of…".
+
+**Groups with topics.** Messages are grouped per topic, and the topic name gives the subject when
+the chat itself has `"subject": null`.
 
 **Whose messages count.** Admins of the chat, anonymous admin posts, channel posts. If a chat
 shows no admins at all, all authors are read (the keyword filter still applies).
@@ -546,7 +560,9 @@ The id in `config.json` is wrong or you left the chat. Run `python -m dz.setup c
 - Is the chat in `telegram.chats`?
 - Was it written by an admin of the chat? If the teacher is not an admin, the task is skipped.
 - Does the message contain an assignment word? A bare file without any text is skipped.
-- In a general chat (`"subject": null`), does the text name the subject?
+- In a general chat (`"subject": null`), does the topic name or the text name the subject?
+  Add the topic name to the aliases in `subjects` if not.
+- Is it a bare file? Its name must contain a kind of work (пр 4, ЛР, КП, РГР…).
 - Is it hidden as done? Look at the "Hidden as done" lines at the bottom of the output.
 
 **Something is hidden as done but you did not do it**

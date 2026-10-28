@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from .config import Config
 from .models import TELEGRAM, Notice, Submission, Task
 from .textitems import text_to_item
-from .textparse import ASSIGNMENT_RE
+from .textparse import ASSIGNMENT_RE, file_names_task, guess_subjects, looks_like_assignment
 
 GROUP_GAP = timedelta(minutes=30)  # a teacher's text, files and clarifications during one class
 SUBMISSIONS_DAYS = 14
@@ -22,6 +22,7 @@ SUBMISSIONS_DAYS = 14
 @dataclass
 class Post:
     sender_id: int | None
+    topic_id: int  # forum topic (1 = General, or a group without topics)
     first: datetime
     last: datetime
     msg_id: int
@@ -36,6 +37,34 @@ def _file_name(msg) -> str | None:
     if not msg.file or msg.sticker or msg.gif:
         return None
     return msg.file.name or None
+
+
+def _topic_id(msg) -> int:
+    """Forum topic of a message. Messages in a topic carry forum_topic=True and the topic id
+    (reply_to_top_id when it is a reply inside the topic, otherwise reply_to_msg_id)."""
+    rt = msg.reply_to
+    if rt and getattr(rt, "forum_topic", False):
+        return rt.reply_to_top_id or rt.reply_to_msg_id
+    return 1
+
+
+async def _topic_titles(client, entity) -> dict[int, str]:
+    """Topic id -> title for groups with topics ("Physics", "Math", ...); empty for normal groups."""
+    if not getattr(entity, "forum", False):
+        return {}
+    from telethon import functions
+
+    try:
+        req = functions.channels.GetForumTopicsRequest(
+            channel=entity, offset_date=None, offset_id=0, offset_topic=0, limit=100)
+    except AttributeError:  # newer Telegram layers moved the method to messages.*
+        req = functions.messages.GetForumTopicsRequest(
+            peer=entity, offset_date=None, offset_id=0, offset_topic=0, limit=100)
+    try:
+        res = await client(req)
+    except Exception:  # noqa: BLE001 - without topics we fall back to subject-from-text
+        return {}
+    return {t.id: t.title for t in res.topics if getattr(t, "title", None)}
 
 
 async def _admin_ids(client, entity) -> set[int]:
@@ -66,6 +95,7 @@ async def collect(api_id: int, api_hash: str, session: str, cfg: Config, now: da
             chat_id = utils.get_peer_id(entity)
             broadcast = bool(getattr(entity, "broadcast", False))
             admins = await _admin_ids(client, entity)
+            topics = await _topic_titles(client, entity)
 
             posts: list[Post] = []
             async for msg in client.iter_messages(entity):
@@ -76,7 +106,7 @@ async def collect(api_id: int, api_hash: str, session: str, cfg: Config, now: da
                             or msg.sender_id == chat_id)
                 if not official or msg.via_bot_id:
                     continue
-                p = Post(msg.sender_id, msg.date, msg.date, msg.id)
+                p = Post(msg.sender_id, _topic_id(msg), msg.date, msg.date, msg.id)
                 if msg.message:
                     p.texts.append(msg.message)
                 if name := _file_name(msg):
@@ -84,24 +114,31 @@ async def collect(api_id: int, api_hash: str, session: str, cfg: Config, now: da
                 if p.texts or p.files:
                     posts.append(p)
 
-            # glue messages sent in a row by one author (walk in chronological order)
+            # glue messages sent in a row by one author in one topic (walk in chronological order)
             merged: list[Post] = []
-            last_of: dict[int | None, Post] = {}
+            last_of: dict[tuple[int | None, int], Post] = {}
             for p in reversed(posts):
-                prev = last_of.get(p.sender_id)
+                key = (p.sender_id, p.topic_id)
+                prev = last_of.get(key)
                 if prev and p.first - prev.last <= GROUP_GAP:
                     prev.texts += p.texts
                     prev.files += p.files
                     prev.last = p.first
                 else:
                     merged.append(p)
-                    last_of[p.sender_id] = p
+                    last_of[key] = p
 
             username = getattr(entity, "username", None)
             for p in merged:
                 text = p.text()
+                # only files and no assignment words: the file name itself must name a kind of work
+                if not looks_like_assignment("\n".join(p.texts)) and not file_names_task(p.files):
+                    continue
                 url = f"https://t.me/{username}/{p.msg_id}" if username else None
-                item = text_to_item(text, p.first, TELEGRAM, cfg, fixed_subject=entry.get("subject"), url=url,
+                # a chat-level subject wins; in a general chat with topics the topic name gives the subject
+                topic = topics.get(p.topic_id) if p.topic_id != 1 else None
+                subject = entry.get("subject") or _topic_subject(topic, cfg)
+                item = text_to_item(text, p.first, TELEGRAM, cfg, fixed_subject=subject, url=url,
                                     keep_undated=True, strict=True)
                 if isinstance(item, Notice):
                     notices.append(item)
@@ -109,13 +146,21 @@ async def collect(api_id: int, api_hash: str, session: str, cfg: Config, now: da
                     file = next((f for f in p.files if ASSIGNMENT_RE.search(f.replace("_", " "))), None)
                     if file and file.lower() not in item.title.lower():
                         item.title = f"{item.title} 📎 {file}"
-                    item.origin = chat_name
+                    item.origin = f"{chat_name}/{topic}" if topic else chat_name
                     item.match_text = text
                     tasks.append(item)
 
         submissions = await _my_submissions(client, now - timedelta(days=SUBMISSIONS_DAYS))
 
     return tasks, notices, submissions
+
+
+def _topic_subject(topic: str | None, cfg: Config) -> str | None:
+    """Topic title -> subject from config.json ("Вишмат" -> "Higher Mathematics"); None if unclear."""
+    if not topic:
+        return None
+    hits = guess_subjects(topic, cfg.subjects)
+    return hits[0] if len(hits) == 1 else None
 
 
 async def _my_submissions(client, since: datetime) -> list[Submission]:
