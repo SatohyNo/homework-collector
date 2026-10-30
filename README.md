@@ -373,9 +373,9 @@ Run `python -m dz.setup chats`, copy the lines for the chats you need and fill i
 ```json
 "telegram": {
   "chats": [
-    {"chat": -1001234567890, "subject": "Higher Mathematics", "name": "Group 61 Math", "short": "Math"},
+    {"chat": -1001234567890, "subject": "Higher Mathematics", "name": "My group: Math", "short": "Math"},
     {"chat": -1001234567891, "subject": "Programming",        "name": "Programming 2026", "short": "Prog"},
-    {"chat": -1001234567892, "subject": null,                 "name": "Group 61", "short": "Group"}
+    {"chat": -1001234567892, "subject": null,                 "name": "My group",   "short": "Group"}
   ]
 }
 ```
