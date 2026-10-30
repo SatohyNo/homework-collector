@@ -1,5 +1,6 @@
-"""Setup wizard for access keys. Everything is typed only in your terminal and saved in ~/.dz
-with mode 600 (only you can read it). Nothing is written into the project or git.
+"""Setup wizard for access keys. Everything is typed only in your terminal and stored in your
+system keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service). No key is
+written to a plain file, the project folder or git.
 
     python -m dz.setup moodle      # Moodle token from login + password (or paste an existing key)
     python -m dz.setup telegram    # api_id/api_hash and sign-in to your account
@@ -7,6 +8,7 @@ with mode 600 (only you can read it). Nothing is written into the project or git
     python -m dz.setup classroom   # Google Classroom via your own Apps Script
     python -m dz.setup classroom-oauth  # Google Classroom via your own Google Cloud OAuth client (fallback)
     python -m dz.setup check       # show what is already set up
+    python -m dz.setup forget      # remove all keys of this project from the keychain
 """
 
 import asyncio
@@ -25,19 +27,18 @@ from pathlib import Path
 
 import requests
 
-from .config import ROOT, load_config, secret_path
+from . import keystore
+from .config import ROOT, SECRETS_DIR, load_config, secret_path
 from .security import require_host, require_https
 
 TEMPLATE = ROOT / "tools" / "classroom" / "Code.gs"
 
 
-def _save_private(path: Path, text: str) -> None:
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if path.is_symlink():
-        sys.exit(f"{path} is a symlink; refusing to write a key through a link")
-    path.touch(mode=0o600, exist_ok=True)
-    path.chmod(0o600)
-    path.write_text(text)
+def _store(name: str, value: str) -> None:
+    try:
+        keystore.put(name, value)
+    except keystore.KeystoreError as e:
+        sys.exit(f"Cannot save the key: {e}")
 
 
 def _ensure_config() -> Path:
@@ -80,46 +81,53 @@ def moodle() -> None:
         "wstoken": token, "wsfunction": "core_webservice_get_site_info", "moodlewsrestformat": "json"}).json()
     if "exception" in check:
         sys.exit(f"The key does not work: {check.get('message')}")
-    _save_private(secret_path("MOODLE_TOKEN_FILE"), token)
+    _store("MOODLE_TOKEN_FILE", token)
 
     cfg_path = _ensure_config()
     cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     cfg["moodle_url"] = url
     cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(f"\n✓ Moodle: signed in as {check.get('fullname')}. Token: {secret_path('MOODLE_TOKEN_FILE')}")
+    print(f"\n✓ Moodle: signed in as {check.get('fullname')}. The token is in your system keychain.")
 
 
 # --- Telegram ---------------------------------------------------------------
 
 def _tg_client():
-    from telethon import TelegramClient
+    from .telegram_src import make_client
 
-    keys = json.loads(secret_path("TG_CONFIG_FILE").read_text())
-    return TelegramClient(str(secret_path("TG_SESSION_FILE").with_suffix("")), keys["api_id"], keys["api_hash"])
+    client = make_client()
+    if client is None:
+        sys.exit("Telegram is not set up yet: run `python -m dz.setup telegram` first.")
+    return client
 
 
 def telegram() -> None:
-    cfg_file = secret_path("TG_CONFIG_FILE")
-    if not cfg_file.exists():
+    from telethon import TelegramClient
+    from telethon.sessions import StringSession
+
+    keys = keystore.get("TG_CONFIG_FILE")
+    if not keys:
         print("Telegram: you need an api_id and api_hash. How to get them: README, section \"Telegram\".")
         api_id = int(input("api_id (a number): ").strip())
         api_hash = getpass.getpass("api_hash (hidden): ").strip()
-        _save_private(cfg_file, json.dumps({"api_id": api_id, "api_hash": api_hash}))
+        keys = json.dumps({"api_id": api_id, "api_hash": api_hash})
+        _store("TG_CONFIG_FILE", keys)
+    keys = json.loads(keys)
 
     async def login():
-        client = _tg_client()
+        # an in-memory session: after sign-in it is saved to the keychain, never to a file
+        client = TelegramClient(StringSession(keystore.get("TG_SESSION_FILE") or ""), int(keys["api_id"]), keys["api_hash"])
         # start() asks for your phone number, the code from Telegram and your 2FA password if you have one
         await client.start(password=lambda: getpass.getpass("Two-step verification password (hidden): "))
         me = await client.get_me()
+        session = client.session.save()
         await client.disconnect()
-        return me
+        return me, session
 
-    me = asyncio.run(login())
-    session = secret_path("TG_SESSION_FILE")
-    if session.exists():
-        session.chmod(0o600)
-    print(f"\n✓ Telegram: signed in as {me.first_name}. Session: {session}")
-    print("  The session file is full access to your account. Never share it.")
+    me, session = asyncio.run(login())
+    _store("TG_SESSION_FILE", session)
+    print(f"\n✓ Telegram: signed in as {me.first_name}. The session is in your system keychain.")
+    print("  The session is full access to your account; it never leaves the keychain.")
     print("  Next: python -m dz.setup chats, to see the ids of your groups.")
 
 
@@ -146,16 +154,21 @@ def chats() -> None:
 def classroom() -> None:
     key = secrets.token_urlsafe(24)
     code = TEMPLATE.read_text(encoding="utf-8").replace("__SECRET_KEY__", key)
-    out = secret_path("CLASSROOM_URL_FILE").parent / "classroom-Code.gs"
-    _save_private(out, code)
-    copied = False
+    out = None
     if shutil.which("pbcopy"):
-        subprocess.run(["pbcopy"], input=code.encode(), check=False)
-        copied = True
+        subprocess.run(["pbcopy"], input=code.encode(), check=False)  # macOS: clipboard, no file at all
+    else:
+        # elsewhere a temporary private file, deleted as soon as setup finishes
+        out = SECRETS_DIR / "classroom-Code.gs"
+        SECRETS_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+        out.touch(mode=0o600, exist_ok=True)
+        out.write_text(code, encoding="utf-8")
 
     print("Google Classroom via Apps Script (the script runs as you, no Google Cloud project needed).\n")
-    print(f"1. The script code with your secret key was {'copied to the clipboard' if copied else 'saved'}:")
-    print(f"   {out}")
+    if out:
+        print(f"1. The script code with your secret key is in this temporary file (deleted after setup):\n   {out}")
+    else:
+        print("1. The script code with your secret key is copied to the clipboard.")
     print("2. Open https://script.google.com/home/projects/create with the Google account that has your Classroom.")
     print("3. Delete everything in the editor, paste the code (Cmd+V / Ctrl+V), save (Cmd+S / Ctrl+S).")
     print("4. On the left: \"Services\" (+) → \"Google Classroom API\" → \"Add\".")
@@ -177,8 +190,10 @@ def classroom() -> None:
         sys.exit("The answer is not JSON. Check that the deployment has \"Who has access: Anyone\".")
     if "error" in data:
         sys.exit(f"The script returned an error: {data['error']}")
-    _save_private(secret_path("CLASSROOM_URL_FILE"), full)
-    print(f"\n✓ Classroom: {len(data.get('courses', []))} courses found. URL saved to {secret_path('CLASSROOM_URL_FILE')}")
+    _store("CLASSROOM_URL_FILE", full)
+    if out:
+        out.unlink(missing_ok=True)
+    print(f"\n✓ Classroom: {len(data.get('courses', []))} courses found. The URL is in your system keychain.")
 
 
 CLASSROOM_SCOPES = [
@@ -191,12 +206,12 @@ CLASSROOM_SCOPES = [
 def classroom_oauth() -> None:
     """Fallback when Apps Script is blocked: sign in with your own OAuth client (Desktop app).
     You sign in on Google's own page in your browser; your password never reaches this script."""
-    client_file = secret_path("CLASSROOM_CLIENT_FILE")
-    if not client_file.exists():
-        sys.exit(f"Put the downloaded OAuth client JSON here first: {client_file}\n"
+    # the downloaded client JSON is moved into the keychain (and the file deleted) on first use
+    raw = keystore.get("CLASSROOM_CLIENT_FILE", print)
+    if not raw:
+        sys.exit(f"Put the downloaded OAuth client JSON here first: {secret_path('CLASSROOM_CLIENT_FILE')}\n"
                  "How to get it: README, section \"Google Classroom, option B\".")
-    client_file.chmod(0o600)
-    c = json.loads(client_file.read_text())
+    c = json.loads(raw)
     c = c.get("installed") or c.get("web")
 
     verifier = secrets.token_urlsafe(64)
@@ -241,19 +256,26 @@ def classroom_oauth() -> None:
     }).json()
     if "refresh_token" not in tok:
         sys.exit(f"Google did not return a refresh token: {tok.get('error_description') or tok}")
-    _save_private(secret_path("CLASSROOM_TOKEN_FILE"), json.dumps({"refresh_token": tok["refresh_token"]}))
-    print(f"\n✓ Classroom: token saved to {secret_path('CLASSROOM_TOKEN_FILE')}")
+    _store("CLASSROOM_TOKEN_FILE", json.dumps({"refresh_token": tok["refresh_token"]}))
+    print("\n✓ Classroom: the token is in your system keychain.")
 
 
 # --- Check ------------------------------------------------------------------
 
 def check() -> None:
     cfg = load_config()
+    try:
+        import keyring
+
+        print(f"  Keychain: {type(keyring.get_keyring()).__module__}")
+        has = keystore.has
+    except keystore.KeystoreError as e:
+        sys.exit(f"  ✗ Keychain: {e}")
     items = [
-        ("Moodle token + moodle_url", secret_path("MOODLE_TOKEN_FILE").exists() and bool(cfg.moodle_url)),
-        ("Telegram keys", secret_path("TG_CONFIG_FILE").exists()),
-        ("Telegram session", secret_path("TG_SESSION_FILE").exists()),
-        ("Classroom", secret_path("CLASSROOM_URL_FILE").exists() or secret_path("CLASSROOM_TOKEN_FILE").exists()),
+        ("Moodle token + moodle_url", has("MOODLE_TOKEN_FILE") and bool(cfg.moodle_url)),
+        ("Telegram keys", has("TG_CONFIG_FILE")),
+        ("Telegram session", has("TG_SESSION_FILE")),
+        ("Classroom", has("CLASSROOM_URL_FILE") or has("CLASSROOM_TOKEN_FILE")),
         ("config.json", (ROOT / "config.json").exists()),
         ("Chats in config.json", bool(cfg.telegram_chats)),
     ]
@@ -261,7 +283,14 @@ def check() -> None:
         print(f"  {'✓' if ok else '✗'} {name}")
 
 
-COMMANDS = {"moodle": moodle, "telegram": telegram, "chats": chats, "classroom": classroom,
+def forget() -> None:
+    """Remove every key of this project from the keychain (for example before giving away a computer)."""
+    for name in keystore.ENTRIES:
+        keystore.delete(name)
+    print("✓ All keys of homework-collector were removed from the system keychain.")
+
+
+COMMANDS = {"forget": forget, "moodle": moodle, "telegram": telegram, "chats": chats, "classroom": classroom,
             "classroom-oauth": classroom_oauth, "check": check}
 
 if __name__ == "__main__":

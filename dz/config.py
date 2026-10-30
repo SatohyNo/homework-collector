@@ -10,8 +10,8 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parent.parent
 HOME = Path.home()
 
-# Secrets live outside the project, in ~/.dz (created by `python -m dz.setup ...`), so they never reach git.
-# Any path can be overridden with a variable in .env.
+# Keys live in the system keychain (see keystore.py). These paths are only where older setups kept
+# key files; they are imported into the keychain once. Any path can be overridden in .env.
 SECRETS_DIR = HOME / ".dz"
 DEFAULT_PATHS = {
     "MOODLE_TOKEN_FILE": SECRETS_DIR / "moodle-token",
@@ -70,10 +70,7 @@ def secret_path(name: str) -> Path:
 
 
 def read_secret(name: str, warn=None) -> str | None:
-    from .security import ensure_private
+    """A key from the system keychain (imported once from an old key file if needed)."""
+    from . import keystore
 
-    p = secret_path(name)
-    if not p.exists():
-        return None
-    ensure_private(p, warn)
-    return p.read_text().strip()
+    return keystore.get(name, warn)

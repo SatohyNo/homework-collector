@@ -7,6 +7,7 @@ teacher often writes "This is the assignment for the test" and then posts the pd
 Your own messages with files in all chats are also read, to hide work you already submitted.
 """
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
@@ -94,15 +95,34 @@ async def _admin_ids(client, entity) -> set[int]:
         return set()
 
 
-async def collect(api_id: int, api_hash: str, session: str, cfg: Config, now: datetime, warn
-                  ) -> tuple[list[Task], list[Notice], list[Submission]]:
-    from telethon import TelegramClient, utils
+def make_client(warn=None):
+    """Telegram client whose api keys and session come from the system keychain (no session file).
+    None if Telegram is not set up yet."""
+    from telethon import TelegramClient
+    from telethon.sessions import StringSession
+
+    from . import keystore
+
+    keys = keystore.get("TG_CONFIG_FILE", warn)
+    session = keystore.get("TG_SESSION_FILE", warn)
+    if not keys or not session:
+        return None
+    keys = json.loads(keys)
+    return TelegramClient(StringSession(session), int(keys["api_id"]), keys["api_hash"])
+
+
+async def collect(client, cfg: Config, now: datetime, warn) -> tuple[list[Task], list[Notice], list[Submission]]:
+    from telethon import utils
 
     tasks: list[Task] = []
     notices: list[Notice] = []
     since = now - timedelta(days=cfg.days_back)
 
-    async with TelegramClient(session, api_id, api_hash) as client:  # the first run asks for phone and code
+    async with client:
+        if not await client.is_user_authorized():
+            raise RuntimeError("the Telegram session has expired, run `python -m dz.setup telegram`")
+        # a keychain session keeps no cache of chats; loading the dialog list fills it, so ids resolve
+        await client.get_dialogs()
         for entry in cfg.telegram_chats:
             try:
                 entity = await _resolve(client, entry["chat"])
@@ -222,11 +242,9 @@ async def _resolve(client, chat):
     raise LookupError("no dialog with this name")
 
 
-async def send_to_saved(api_id: int, api_hash: str, session: str, text: str) -> None:
+async def send_to_saved(client, text: str) -> None:
     """Sends the text to your own Saved Messages, nobody else."""
-    from telethon import TelegramClient
-
-    async with TelegramClient(session, api_id, api_hash) as client:
+    async with client:
         # Telegram limit is 4096 characters; split by lines
         chunk = ""
         for line in text.split("\n"):

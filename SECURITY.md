@@ -1,5 +1,7 @@
 # Security
 
+Maintainer: [@SatohyNo](https://github.com/SatohyNo)
+
 ## Reporting a vulnerability
 
 Please do **not** open a public issue for security problems. Use GitHub's private reporting:
@@ -9,9 +11,11 @@ Never include real tokens, session files or chat exports in a report.
 
 ## How this project protects your data
 
-- **Keys stay outside the project.** Tokens and the Telegram session live in `~/.dz` with
-  permissions `600`. On every run the files are checked: if other users on the computer could read
-  them, the permissions are fixed and you get a warning. Keys are never read through symlinks.
+- **Keys live in the system keychain.** Tokens, Telegram api keys and the Telegram session are
+  stored in macOS Keychain / Windows Credential Manager / Linux Secret Service, encrypted by the
+  operating system. No key is written to a plain file. Keys from older file-based setups are
+  imported once (their files in `~/.dz` are deleted; old key files are permission-checked and never
+  read through symlinks). `python -m dz.setup forget` removes every key.
 - **HTTPS only.** The Moodle token is sent only to an `https://` address and redirects are refused,
   so a misconfigured server cannot forward your token elsewhere. The Classroom URL must point to
   `script.google.com`.
@@ -30,6 +34,7 @@ Never include real tokens, session files or chat exports in a report.
 | Key | How to revoke |
 |---|---|
 | Telegram session | Telegram → Settings → Devices → terminate the session. Then `python -m dz.setup telegram`. |
+| All keys on a computer | `python -m dz.setup forget` |
 | Telegram api_hash | my.telegram.org → API development tools (create a new app if needed). |
 | Moodle token | Moodle → Preferences → Security keys → Reset. Then `python -m dz.setup moodle`. |
 | Classroom Apps Script URL | script.google.com → your project → Deploy → Manage deployments → Archive. Then `python -m dz.setup classroom`. |
