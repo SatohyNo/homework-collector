@@ -544,6 +544,10 @@ affected task and shows one line marked `[postponed]` or `[cancelled]`.
 
 ---
 
+Security checks and what to do if a key leaks: see [SECURITY.md](SECURITY.md).
+
+---
+
 ## Troubleshooting
 
 **`ModuleNotFoundError: No module named 'telethon'` (or `requests`, `dotenv`)**
@@ -605,6 +609,7 @@ dz/
   textitems.py     message → task
   merge.py         window, duplicates, postponed tasks, "already done" matching
   render.py        terminal table and Telegram message
+  security.py      private key files, HTTPS-only URLs, secret redaction, safe terminal text
   demo.py          sample data for --demo
 tools/classroom/   Apps Script template (the key is inserted by dz.setup)
 config.example.json  template for your config.json

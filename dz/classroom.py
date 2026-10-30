@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 import requests
 
 from .config import Config, read_secret, secret_path
+from .security import ensure_private, require_host
 from .models import CLASSROOM, NEW, UNCLEAR, Notice, Task
 from .textitems import text_to_item
 from .textparse import canonical_subject
@@ -23,7 +24,9 @@ def available() -> bool:
 def fetch_dump() -> dict:
     url = read_secret("CLASSROOM_URL_FILE")
     if url:
+        require_host(url, ("script.google.com",), "Classroom web app URL")
         resp = requests.get(url, timeout=360)  # Apps Script redirects to googleusercontent
+        require_host(resp.url, ("google.com", "googleusercontent.com"), "Classroom redirect")
         resp.raise_for_status()
         try:
             data = resp.json()
@@ -36,6 +39,8 @@ def fetch_dump() -> dict:
 
 
 def _dump_via_api() -> dict:
+    ensure_private(secret_path("CLASSROOM_CLIENT_FILE"))
+    ensure_private(secret_path("CLASSROOM_TOKEN_FILE"))
     client = json.loads(secret_path("CLASSROOM_CLIENT_FILE").read_text())
     client = client.get("installed") or client.get("web")
     token = json.loads(secret_path("CLASSROOM_TOKEN_FILE").read_text())

@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import requests
 
 from .config import Config
+from .security import require_https
 from .models import DONE, MOODLE, NEW, Notice, Task
 from .textitems import text_to_item
 from .textparse import canonical_subject, strip_html
@@ -16,13 +17,17 @@ class MoodleError(RuntimeError):
 
 class MoodleClient:
     def __init__(self, base_url: str, token: str):
+        require_https(base_url, "moodle_url")
         self.url = base_url.rstrip("/") + "/webservice/rest/server.php"
         self.token = token
 
     def call(self, function: str, **params):
         data = {"wstoken": self.token, "wsfunction": function, "moodlewsrestformat": "json"}
         data.update(_flatten(params))
-        resp = requests.post(self.url, data=data, timeout=30)
+        # no redirects: a redirect could re-send the token to another host
+        resp = requests.post(self.url, data=data, timeout=30, allow_redirects=False)
+        if resp.is_redirect:
+            raise MoodleError(f"{function}: the server redirected to another address; check moodle_url")
         resp.raise_for_status()
         body = resp.json()
         if isinstance(body, dict) and body.get("exception"):

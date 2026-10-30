@@ -26,12 +26,15 @@ from pathlib import Path
 import requests
 
 from .config import ROOT, load_config, secret_path
+from .security import require_host, require_https
 
 TEMPLATE = ROOT / "tools" / "classroom" / "Code.gs"
 
 
 def _save_private(path: Path, text: str) -> None:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if path.is_symlink():
+        sys.exit(f"{path} is a symlink; refusing to write a key through a link")
     path.touch(mode=0o600, exist_ok=True)
     path.chmod(0o600)
     path.write_text(text)
@@ -52,13 +55,17 @@ def moodle() -> None:
     url = input("Moodle address: ").strip().rstrip("/")
     if not url.startswith("http"):
         url = "https://" + url
+    try:
+        require_https(url, "Moodle address")  # the password and token must not travel in clear text
+    except ValueError as e:
+        sys.exit(str(e))
     print("\nNext: your Moodle login and password. The password is hidden and goes only to your Moodle site.")
     print("If you sign in with Google/SSO and have no password, just press Enter and paste a key instead")
     print("(Moodle → profile → Preferences → Security keys → \"Moodle mobile web service\").")
     login = input("Login (or Enter): ").strip()
     if login:
         password = getpass.getpass("Password: ")
-        resp = requests.post(f"{url}/login/token.php", timeout=30, data={
+        resp = requests.post(f"{url}/login/token.php", timeout=30, allow_redirects=False, data={
             "username": login, "password": password, "service": "moodle_mobile_app"})
         del password
         data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
@@ -69,7 +76,7 @@ def moodle() -> None:
     else:
         token = getpass.getpass("Paste the key (hidden): ").strip()
 
-    check = requests.post(f"{url}/webservice/rest/server.php", timeout=30, data={
+    check = requests.post(f"{url}/webservice/rest/server.php", timeout=30, allow_redirects=False, data={
         "wstoken": token, "wsfunction": "core_webservice_get_site_info", "moodlewsrestformat": "json"}).json()
     if "exception" in check:
         sys.exit(f"The key does not work: {check.get('message')}")
@@ -157,7 +164,11 @@ def classroom() -> None:
     print("6. Google asks for access: \"Authorize access\" → your account → \"Advanced\" →")
     print("   \"Go to … (unsafe)\" → \"Allow\". It is your own script, so the warning is expected.")
     print("7. Copy the \"Web app URL\" (https://script.google.com/macros/s/…/exec).\n")
-    url = input("Paste the Web app URL: ").strip()
+    url = input("Paste the Web app URL: ").strip().split("?")[0]
+    try:
+        require_host(url, ("script.google.com",), "Web app URL")
+    except ValueError as e:
+        sys.exit(str(e))
     full = f"{url}?key={key}"
     print("Checking (the first request can take up to a minute)…")
     try:

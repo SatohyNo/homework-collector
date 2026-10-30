@@ -69,6 +69,11 @@ def secret_path(name: str) -> Path:
     return Path(os.path.expanduser(env(name) or str(DEFAULT_PATHS[name])))
 
 
-def read_secret(name: str) -> str | None:
+def read_secret(name: str, warn=None) -> str | None:
+    from .security import ensure_private
+
     p = secret_path(name)
-    return p.read_text().strip() if p.exists() else None
+    if not p.exists():
+        return None
+    ensure_private(p, warn)
+    return p.read_text().strip()

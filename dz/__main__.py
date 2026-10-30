@@ -14,6 +14,7 @@ from .config import env, load_config, read_secret, secret_path
 from .merge import apply_notices, dedupe, hide_submitted, in_window, sort_tasks
 from .models import DONE, Notice, Task
 from .render import render, render_telegram
+from .security import ensure_private, redact
 
 
 def main() -> None:
@@ -28,7 +29,9 @@ def main() -> None:
     cfg = load_config()
     now = datetime.now(cfg.tz)
     warnings: list[str] = []
-    warn = warnings.append
+
+    def warn(message: str) -> None:
+        warnings.append(redact(message))  # error texts can contain URLs with keys
     tasks: list[Task] = []
     notices: list[Notice] = []
     submissions = []  # your files in chats and on disk, used to hide work that is already done
@@ -43,7 +46,7 @@ def main() -> None:
         add(demo_collect(cfg, now))
     else:
         if not args.no_moodle:
-            token = env("MOODLE_TOKEN") or read_secret("MOODLE_TOKEN_FILE")
+            token = env("MOODLE_TOKEN") or read_secret("MOODLE_TOKEN_FILE", warn)
             if token and not cfg.moodle_url:
                 warn("Moodle skipped: set moodle_url in config.json")
             elif token:
@@ -68,11 +71,10 @@ def main() -> None:
                 warn("Classroom skipped: no access, run `python -m dz.setup classroom`")
 
         if not args.no_telegram:
-            tg_file = secret_path("TG_CONFIG_FILE")
-            if tg_file.exists():
+            keys = _telegram_keys(warn)
+            if keys:
                 from . import telegram_src
 
-                keys = json.loads(tg_file.read_text())
                 session = str(secret_path("TG_SESSION_FILE").with_suffix(""))  # Telethon appends .session itself
                 try:
                     tg_tasks, tg_notices, submissions = asyncio.run(
@@ -101,20 +103,29 @@ def main() -> None:
 
     if args.demo or args.no_send or not cfg.send_to_saved:
         return
-    tg_file = secret_path("TG_CONFIG_FILE")
-    if not tg_file.exists():
-        print(f"\nNot sent to Saved Messages: {tg_file} is missing")
+    keys = _telegram_keys(print)
+    if not keys:
+        print("\nNot sent to Saved Messages: Telegram is not set up")
         return
     from . import telegram_src
 
-    keys = json.loads(tg_file.read_text())
     session = str(secret_path("TG_SESSION_FILE").with_suffix(""))
     try:
         asyncio.run(telegram_src.send_to_saved(int(keys["api_id"]), keys["api_hash"], session,
                                                render_telegram(tasks, notice_rows, now, until)))
         print("\nSent to Telegram Saved Messages ✓")
     except Exception as e:  # noqa: BLE001
-        print(f"\nNot sent to Saved Messages: {e}")
+        print(f"\nNot sent to Saved Messages: {redact(str(e))}")
+
+
+def _telegram_keys(warn) -> dict | None:
+    """api_id/api_hash, after checking that the key and session files are private."""
+    keys_file, session_file = secret_path("TG_CONFIG_FILE"), secret_path("TG_SESSION_FILE")
+    if not keys_file.exists():
+        return None
+    ensure_private(keys_file, warn)
+    ensure_private(session_file, warn)
+    return json.loads(keys_file.read_text())
 
 
 if __name__ == "__main__":
