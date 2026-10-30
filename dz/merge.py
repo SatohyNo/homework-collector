@@ -121,6 +121,9 @@ def dedupe(tasks: list[Task]) -> list[Task]:
 def in_window(task: Task, now: datetime, until: datetime) -> bool:
     if task.deadline is None:
         return task.status == UNCLEAR  # undated tasks are kept (they are marked unclear)
+    if not task.structured:
+        # a task given in Telegram during the last days is shown even if it is due after the horizon
+        return task.deadline >= now
     return now <= task.deadline <= until
 
 
@@ -173,14 +176,49 @@ def _sub_tokens(text: str) -> tuple[set[str], set[str], set[str]]:
     return numbers, stems, _kinds(" ".join(words))
 
 
+# a number belongs to a kind of work only when it stands right after it ("лаба 3", "практична робота 4",
+# "ЛР 1-3" -> 1) or right before a short form ("4 пр", "KP4"); "здати 4 лабораторні" is a count, not lab 4
+_FILLER = {"робота", "роботу", "роботи", "работа", "работу", "работы", "номер", "no", "n"}
+_SHORT_KINDS = {"пр", "лр", "кп", "ргр", "мкр", "лаб"}
+
+
+def _kind_numbers(text: str) -> dict[str, set[str]]:
+    text = _LETTER_DIGIT_RE.sub(" ", text.replace("_", " "))
+    words = [_fix_lookalikes(w.lower()) for w in _SPLIT_RE.split(text) if w]
+    out: dict[str, set[str]] = {}
+    for i, w in enumerate(words):
+        kinds = _kinds(w)
+        if not kinds:
+            continue
+        nums: set[str] = set()
+        j = i + 1
+        while j < len(words) and words[j] in _FILLER:
+            j += 1
+        if j < len(words) and words[j].isdigit() and len(words[j]) <= 2:
+            nums.add(words[j])
+            # "лабу 3 и 4" / "3 і 4": a second number joined by "and"
+            if j + 2 < len(words) and words[j + 1] in ("і", "и", "та", "й") and words[j + 2].isdigit():
+                nums.add(words[j + 2])
+        elif w in _SHORT_KINDS and i > 0 and words[i - 1].isdigit() and len(words[i - 1]) <= 2:
+            nums.add(words[i - 1])
+        for k in kinds:
+            out.setdefault(k, set()).update(nums)
+    return out
+
+
 def match_strength(task: Task, sub_text: str) -> int:
-    """2: same kind of work with the same number (RGR 1, KP 4); 1: two or more shared words; 0: no match."""
-    tn, ts, tk = _sub_tokens(task.match_text or task.title)
-    sn, ss, sk = _sub_tokens(sub_text)
-    numbers_ok = not tn or not sn or bool(tn & sn)
-    if tk & sk and numbers_ok:
-        return 2
-    return 1 if len(ts & ss) >= 2 else 0
+    """2: same kind of work with the same number (RGR 1, KP 4); 1: two or more shared words; 0: no match.
+    A task without a number ("submit 4 labs") is never closed by a numbered file ("Lab_1-3")."""
+    _, ts, _ = _sub_tokens(task.match_text or task.title)
+    _, ss, _ = _sub_tokens(sub_text)
+    tk, sk = _kind_numbers(task.match_text or task.title), _kind_numbers(sub_text)
+    shared = tk.keys() & sk.keys()
+    for kind in shared:
+        tnums, snums = tk[kind], sk[kind]
+        if (tnums and snums and tnums & snums) or (not tnums and not snums):
+            return 2
+    # same kind but different numbers ("lab 3" vs "lab 1") is a mismatch, not a weak match
+    return 1 if not shared and len(ts & ss) >= 2 else 0
 
 
 def is_submitted(task: Task, sub_text: str) -> bool:

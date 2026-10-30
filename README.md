@@ -461,7 +461,13 @@ The computer must be on (and not asleep) at that time.
 ## How the filtering works
 
 **Which deadlines are shown.** Moodle and Classroom tasks due between now and the end of next
-week (`horizon`) that you have not submitted. Telegram messages from the last `days_back` days.
+week (`horizon`) that you have not submitted. Telegram tasks given in the last `days_back` days,
+even if their deadline is later than `horizon` (only past deadlines are dropped).
+
+**Dates in text.** "до 15.11", "15 листопада", "23:59", "завтра до 10:00", and periods counted
+from the message date: "дедлайн 2 тижні", "срок 2 недели", "термін 3 дні". Numbers after
+"таблиця", "пункт", "рис.", "тема", "варіант", "№" are references, not dates ("таблиця 6.1"
+is not 6 January).
 
 **What counts as an assignment in Telegram.** The message (with the messages glued to it) must
 contain an assignment word: дз, завдання, здати, лаба, КП, РГР, практична, самостійна, конспект,
@@ -478,6 +484,12 @@ file name is not enough, because lecture files are often called "Topic 3: struct
 **Groups with topics.** Messages are grouped per topic, and the topic name gives the subject when
 the chat itself has `"subject": null`.
 
+**General class chats** (`"subject": null`) are noisy, so there a post must actually tell you to
+do something (зробити / сделать, здати / сдать, задали, треба / нужно, ДЗ, дедлайн…) or carry a
+task file. "I haven't heard about lab 3" is not a task. Replies to other people's messages are
+skipped unless they contain a date. Everywhere, optional things ("ви можете підготувати тези",
+"за бажанням", "по желанию") are skipped.
+
 **Whose messages count.** Admins of the chat, anonymous admin posts, channel posts. If a chat
 shows no admins at all, all authors are read (the keyword filter still applies).
 
@@ -488,7 +500,10 @@ repeats a task that Moodle/Classroom already has.
 
 **"Already done".** A task is hidden when one of your files matches it:
 - the same kind of work **and** the same number (`KP4_Petrenko.cpp` ↔ "КП 4",
-  `RGR1_Epure.pdf` ↔ "РГР 1"). This is the strongest match and wins;
+  `RGR1_Epure.pdf` ↔ "РГР 1"). This is the strongest match and wins. A number belongs to the work
+  only when it stands right after the word ("лаба 3", "практична робота 4", "ЛР_1-3" → lab 1) or
+  right before a short form ("4 пр"). "Здати 4 лабораторні" is a count, not lab 4, and a task
+  without a number is never closed by a numbered file;
 - or at least two meaningful words in common (`Складний_розріз_2.pdf` ↔ `Складні_розрізи.pdf`).
 
 Files sent in Telegram count only if sent **after** the task was given, and forwarded files never
