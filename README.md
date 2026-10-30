@@ -1,5 +1,7 @@
 # Homework Collector
 
+Created by **[@SatohyNo](https://github.com/SatohyNo)**.
+
 One command gathers all your homework from **Moodle**, **Google Classroom** and **Telegram** and
 gives you one clean list: in the terminal as a table and in your Telegram **Saved Messages**.
 
@@ -142,9 +144,9 @@ cp config.example.json config.json        # Windows: copy config.example.json co
 
 ## Step 2. Get access
 
-All keys are saved in a hidden folder **`~/.dz`** in your home directory (Windows:
-`C:\Users\<you>\.dz`), readable only by you. They are **never** stored in the project folder,
-so they cannot end up on GitHub by accident.
+All keys are stored in your **system keychain**: encrypted by the operating system and never
+written to a plain file, the project folder or GitHub. See [Where keys are stored](#where-keys-are-stored-keychain)
+for what that means on macOS, Windows and Linux.
 
 You can set up all three sources or only some of them. Missing ones are skipped with a short note.
 
@@ -164,7 +166,7 @@ It asks for:
    type and goes **only to your Moodle site**, which returns an access token. The password is
    not saved anywhere.
 
-That's it. The token is saved to `~/.dz/moodle-token`, and `moodle_url` is written into `config.json`.
+That's it. The token is saved in your keychain, and `moodle_url` is written into `config.json`.
 
 **If you sign in to Moodle with Google / Microsoft / SSO** (no Moodle password), press **Enter**
 at the login prompt and paste a key instead:
@@ -221,12 +223,11 @@ It asks for:
 4. **Code**: Telegram sends it to your Telegram app again. Type it in the terminal.
 5. **Two-step verification password**, only if you enabled it in Telegram settings.
 
-You will see `✓ Telegram: signed in as <your name>`. The session is saved to
-`~/.dz/telegram.session`.
+You will see `✓ Telegram: signed in as <your name>`. The session is saved in your keychain
+(there is no session file).
 
-> ⚠️ **The session file is full access to your Telegram account.** Never send it to anyone or
-> upload it anywhere. To revoke it: Telegram → Settings → Devices → end the session with your
-> app's name.
+> ⚠️ **The session is full access to your Telegram account.** It stays in the keychain; never
+> export it. To revoke it: Telegram → Settings → Devices → end the session with your app's name.
 
 #### Find your chats
 
@@ -251,13 +252,14 @@ as JSON. It is protected by a random secret key, so nobody else can read it.
 python -m dz.setup classroom
 ```
 
-The wizard generates the script with a secret key and (on macOS) copies it to the clipboard.
-It is also saved to `~/.dz/classroom-Code.gs`. Then follow the steps it prints:
+The wizard generates the script with a secret key. On macOS it is copied to the clipboard; on
+Windows/Linux it is written to a temporary file `~/.dz/classroom-Code.gs` that is deleted when
+setup finishes. Then follow the steps it prints:
 
 1. Open <https://script.google.com/home/projects/create>. Use the **same Google account** that
    you use for Classroom (check the avatar top right).
 2. Select everything in the editor and delete it. Paste the code: Cmd+V (macOS) / Ctrl+V.
-   On Windows/Linux open `~/.dz/classroom-Code.gs` in a text editor and copy from there.
+   On Windows/Linux open the temporary file the wizard printed in a text editor and copy from there.
 3. Press **Save** (disk icon, or Cmd+S / Ctrl+S). You may rename the project, e.g. "Classroom export".
 4. In the left panel, next to **Services**, click **+** → choose **Google Classroom API** → **Add**.
 5. Top right: **Deploy** → **New deployment**.
@@ -274,7 +276,7 @@ It is also saved to `~/.dz/classroom-Code.gs`. Then follow the steps it prints:
 11. Paste it into the terminal. The wizard checks it and prints how many courses it found.
 
 > "Anyone" means anyone **with the URL and the secret key**. Without the key the script only
-> answers `bad key`. The URL with the key is saved in `~/.dz/classroom-url`. Do not share it.
+> answers `bad key`. The URL with the key is saved in your keychain. Do not share it.
 
 **If "Anyone" is not available** (some school domains hide it) or you see
 "blocked by your administrator", use option B.
@@ -296,7 +298,8 @@ Archive. Or delete the project.
    add the Google account that has your Classroom → **Save**.
 5. Client: <https://console.cloud.google.com/auth/clients> → **Create client** →
    Application type **Desktop app** → any name → **Create** → **Download JSON**.
-6. Move the downloaded file to `~/.dz/google-client.json`:
+6. Move the downloaded file to `~/.dz/google-client.json` (on the next step it is moved into the
+   keychain and the file is deleted):
    - macOS / Linux: `mkdir -p ~/.dz && mv ~/Downloads/client_secret_*.json ~/.dz/google-client.json`
    - Windows: create the folder `C:\Users\<you>\.dz` and move the file there as `google-client.json`.
 7. Run:
@@ -319,6 +322,7 @@ python -m dz.setup check
 ```
 
 ```
+  Keychain: keyring.backends.macOS
   ✓ Moodle token + moodle_url
   ✓ Telegram keys
   ✓ Telegram session
@@ -417,8 +421,8 @@ Remove the whole `education` block if you do not use it.
 
 ### `.env` (optional)
 
-Only needed if your keys are not in `~/.dz`. Copy `.env.example` to `.env` and uncomment the
-paths you want to change.
+Only needed to import keys from an older setup that kept them in files somewhere else. Copy
+`.env.example` to `.env` and set the paths; the files are copied into the keychain on the first run.
 
 ---
 
@@ -461,7 +465,13 @@ The computer must be on (and not asleep) at that time.
 ## How the filtering works
 
 **Which deadlines are shown.** Moodle and Classroom tasks due between now and the end of next
-week (`horizon`) that you have not submitted. Telegram messages from the last `days_back` days.
+week (`horizon`) that you have not submitted. Telegram tasks given in the last `days_back` days,
+even if their deadline is later than `horizon` (only past deadlines are dropped).
+
+**Dates in text.** "до 15.11", "15 листопада", "23:59", "завтра до 10:00", and periods counted
+from the message date: "дедлайн 2 тижні", "срок 2 недели", "термін 3 дні". Numbers after
+"таблиця", "пункт", "рис.", "тема", "варіант", "№" are references, not dates ("таблиця 6.1"
+is not 6 January).
 
 **What counts as an assignment in Telegram.** The message (with the messages glued to it) must
 contain an assignment word: дз, завдання, здати, лаба, КП, РГР, практична, самостійна, конспект,
@@ -478,6 +488,12 @@ file name is not enough, because lecture files are often called "Topic 3: struct
 **Groups with topics.** Messages are grouped per topic, and the topic name gives the subject when
 the chat itself has `"subject": null`.
 
+**General class chats** (`"subject": null`) are noisy, so there a post must actually tell you to
+do something (зробити / сделать, здати / сдать, задали, треба / нужно, ДЗ, дедлайн…) or carry a
+task file. "I haven't heard about lab 3" is not a task. Replies to other people's messages are
+skipped unless they contain a date. Everywhere, optional things ("ви можете підготувати тези",
+"за бажанням", "по желанию") are skipped.
+
 **Whose messages count.** Admins of the chat, anonymous admin posts, channel posts. If a chat
 shows no admins at all, all authors are read (the keyword filter still applies).
 
@@ -488,7 +504,10 @@ repeats a task that Moodle/Classroom already has.
 
 **"Already done".** A task is hidden when one of your files matches it:
 - the same kind of work **and** the same number (`KP4_Petrenko.cpp` ↔ "КП 4",
-  `RGR1_Epure.pdf` ↔ "РГР 1"). This is the strongest match and wins;
+  `RGR1_Epure.pdf` ↔ "РГР 1"). This is the strongest match and wins. A number belongs to the work
+  only when it stands right after the word ("лаба 3", "практична робота 4", "ЛР_1-3" → lab 1) or
+  right before a short form ("4 пр"). "Здати 4 лабораторні" is a count, not lab 4, and a task
+  without a number is never closed by a numbered file;
 - or at least two meaningful words in common (`Складний_розріз_2.pdf` ↔ `Складні_розрізи.pdf`).
 
 Files sent in Telegram count only if sent **after** the task was given, and forwarded files never
@@ -503,18 +522,46 @@ affected task and shows one line marked `[postponed]` or `[cancelled]`.
 
 ## Privacy and security
 
-- **What is stored and where:**
+### Where keys are stored (keychain)
 
-  | File | Contains |
-  |---|---|
-  | `~/.dz/moodle-token` | Moodle token |
-  | `~/.dz/telegram-api.json` | Telegram api_id and api_hash |
-  | `~/.dz/telegram.session` | Telegram session (**full account access**) |
-  | `~/.dz/classroom-url` | Apps Script URL with its secret key |
-  | `~/.dz/google-client.json`, `google-token.json` | Option B OAuth client and token |
-  | `config.json` (project folder) | Your subjects, chat ids, folder paths |
+All keys are kept by the operating system's password store under the name **`homework-collector`**:
 
-  All files in `~/.dz` are created with permissions `600` (only your user can read them).
+| Keychain entry | Contains |
+|---|---|
+| `moodle-token` | Moodle token |
+| `telegram-api` | Telegram api_id and api_hash |
+| `telegram-session` | Telegram session (**full account access**) |
+| `classroom-url` | Apps Script URL with its secret key |
+| `google-client`, `google-token` | Option B OAuth client and refresh token |
+
+Only `config.json` (subjects, chat ids, folder paths, no secrets) is a file in the project folder.
+
+**macOS** — macOS **Keychain**. Works out of the box. You can see the entries in the *Keychain
+Access* app (search "homework-collector"). If you recreate `.venv` or update Python, macOS may ask
+once "python wants to use your confidential information…": click **Always Allow**.
+
+**Windows** — **Windows Credential Manager**. Works out of the box. You can see the entries in
+*Control Panel → Credential Manager → Windows Credentials* (search "homework-collector").
+
+**Linux** — the **Secret Service** (GNOME Keyring or KDE Wallet).
+- Ubuntu, Fedora, Mint and most desktops already have it: nothing to do. Unlock the keyring when you
+  log in (it happens automatically with your login password).
+- If `python -m dz.setup check` says "no system keychain found":
+  - GNOME / other desktops: `sudo apt install gnome-keyring` (Debian/Ubuntu) or
+    `sudo dnf install gnome-keyring` (Fedora), then log out and back in;
+  - KDE: make sure **KWallet** is enabled in System Settings;
+  - a server without a desktop: `pip install keyrings.cryptfile` (an encrypted file protected by a
+    password) and set `PYTHON_KEYRING_BACKEND=keyrings.cryptfile.cryptfile.CryptFileKeyring`.
+    It asks for that password, so it does not suit unattended cron runs.
+
+**Moving from an older version** that kept keys in files: just run `python -m dz` once. Each key
+is copied into the keychain. Files in `~/.dz` are then deleted; files elsewhere (pointed to by
+`.env`) are left for your other tools and you get a one-line note.
+
+**Removing everything:** `python -m dz.setup forget` deletes all `homework-collector` entries.
+
+### What is read and sent
+
 - **What git ignores:** `config.json`, `.env`, `*.session`, `my_tasks.json`, `.venv/`.
   If you fork this repo, check `git status` before every commit anyway.
 - **What is read:** Moodle/Classroom courses and your submission status; the chats you list;
@@ -525,7 +572,11 @@ affected task and shows one line marked `[postponed]` or `[cancelled]`.
 - **Passwords:** your Moodle password is sent only to your Moodle site to get a token and is not
   saved. Google and Telegram sign-in happens on Google's / Telegram's own pages and prompts.
 - **Revoking access:** see the "revoke" notes in each section of [Step 2](#step-2-get-access).
-  Deleting the `~/.dz` folder removes all keys from your computer.
+  `python -m dz.setup forget` removes all keys from this computer.
+
+---
+
+Security checks and what to do if a key leaks: see [SECURITY.md](SECURITY.md).
 
 ---
 
@@ -535,9 +586,14 @@ affected task and shows one line marked `[postponed]` or `[cancelled]`.
 The environment is not active. Run `source .venv/bin/activate` (Windows: `.venv\Scripts\Activate.ps1`)
 in the project folder, then try again.
 
-**`Telegram unavailable: database is locked`**
-Another program is using the same session file at this moment (for example a second run).
-Wait a minute and run again.
+**`Keychain unavailable: no system keychain found`** (Linux)
+See [Where keys are stored](#where-keys-are-stored-keychain) → Linux.
+
+**macOS asks "python wants to use your confidential information"**
+It is the keychain asking whether this Python may read the keys. Click **Always Allow**.
+
+**`Telegram unavailable: the Telegram session has expired`**
+The session was ended (for example in Telegram → Devices). Run `python -m dz.setup telegram` again.
 
 **`Moodle skipped: set moodle_url in config.json`**
 Run `python -m dz.setup moodle` again, or put your Moodle address into `config.json`.
@@ -590,11 +646,18 @@ dz/
   textitems.py     message → task
   merge.py         window, duplicates, postponed tasks, "already done" matching
   render.py        terminal table and Telegram message
+  keystore.py      keys in the system keychain, one-time import from old key files
+  security.py      HTTPS-only URLs, secret redaction, safe terminal text
   demo.py          sample data for --demo
 tools/classroom/   Apps Script template (the key is inserted by dz.setup)
 config.example.json  template for your config.json
 ```
 
+## Author
+
+Created and maintained by **[@SatohyNo](https://github.com/SatohyNo)**.
+Issues and pull requests are welcome; for security problems see [SECURITY.md](SECURITY.md).
+
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT © [SatohyNo](https://github.com/SatohyNo), see [LICENSE](LICENSE).

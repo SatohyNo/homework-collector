@@ -7,13 +7,14 @@ nothing else.
 
 import argparse
 import asyncio
-import json
 from datetime import datetime
 
-from .config import env, load_config, read_secret, secret_path
+from .config import env, load_config, read_secret
+from .keystore import KeystoreError
 from .merge import apply_notices, dedupe, hide_submitted, in_window, sort_tasks
 from .models import DONE, Notice, Task
 from .render import render, render_telegram
+from .security import redact
 
 
 def main() -> None:
@@ -28,7 +29,9 @@ def main() -> None:
     cfg = load_config()
     now = datetime.now(cfg.tz)
     warnings: list[str] = []
-    warn = warnings.append
+
+    def warn(message: str) -> None:
+        warnings.append(redact(message))  # error texts can contain URLs with keys
     tasks: list[Task] = []
     notices: list[Notice] = []
     submissions = []  # your files in chats and on disk, used to hide work that is already done
@@ -43,7 +46,11 @@ def main() -> None:
         add(demo_collect(cfg, now))
     else:
         if not args.no_moodle:
-            token = env("MOODLE_TOKEN") or read_secret("MOODLE_TOKEN_FILE")
+            try:
+                token = env("MOODLE_TOKEN") or read_secret("MOODLE_TOKEN_FILE", warn)
+            except KeystoreError as e:
+                token = None
+                warn(f"Keychain unavailable: {e}")
             if token and not cfg.moodle_url:
                 warn("Moodle skipped: set moodle_url in config.json")
             elif token:
@@ -68,20 +75,17 @@ def main() -> None:
                 warn("Classroom skipped: no access, run `python -m dz.setup classroom`")
 
         if not args.no_telegram:
-            tg_file = secret_path("TG_CONFIG_FILE")
-            if tg_file.exists():
-                from . import telegram_src
+            from . import telegram_src
 
-                keys = json.loads(tg_file.read_text())
-                session = str(secret_path("TG_SESSION_FILE").with_suffix(""))  # Telethon appends .session itself
-                try:
-                    tg_tasks, tg_notices, submissions = asyncio.run(
-                        telegram_src.collect(int(keys["api_id"]), keys["api_hash"], session, cfg, now, warn))
+            try:
+                client = telegram_src.make_client(warn)
+                if client:
+                    tg_tasks, tg_notices, submissions = asyncio.run(telegram_src.collect(client, cfg, now, warn))
                     add((tg_tasks, tg_notices))
-                except Exception as e:  # noqa: BLE001
-                    warn(f"Telegram unavailable: {e}")
-            else:
-                warn("Telegram skipped: no keys, run `python -m dz.setup telegram`")
+                else:
+                    warn("Telegram skipped: not set up, run `python -m dz.setup telegram`")
+            except Exception as e:  # noqa: BLE001
+                warn(f"Telegram unavailable: {e}")
 
     tasks = [t for t in tasks if in_window(t, now, cfg.deadline_until(now))]
     tasks = dedupe(tasks)
@@ -101,20 +105,17 @@ def main() -> None:
 
     if args.demo or args.no_send or not cfg.send_to_saved:
         return
-    tg_file = secret_path("TG_CONFIG_FILE")
-    if not tg_file.exists():
-        print(f"\nNot sent to Saved Messages: {tg_file} is missing")
-        return
     from . import telegram_src
 
-    keys = json.loads(tg_file.read_text())
-    session = str(secret_path("TG_SESSION_FILE").with_suffix(""))
     try:
-        asyncio.run(telegram_src.send_to_saved(int(keys["api_id"]), keys["api_hash"], session,
-                                               render_telegram(tasks, notice_rows, now, until)))
+        client = telegram_src.make_client(print)
+        if not client:
+            print("\nNot sent to Saved Messages: Telegram is not set up")
+            return
+        asyncio.run(telegram_src.send_to_saved(client, render_telegram(tasks, notice_rows, now, until)))
         print("\nSent to Telegram Saved Messages ✓")
     except Exception as e:  # noqa: BLE001
-        print(f"\nNot sent to Saved Messages: {e}")
+        print(f"\nNot sent to Saved Messages: {redact(str(e))}")
 
 
 if __name__ == "__main__":

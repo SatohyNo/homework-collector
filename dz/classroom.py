@@ -1,13 +1,15 @@
-"""Google Classroom. Main path: your own Apps Script web app (URL in ~/.dz/classroom-url) that
-returns all courses, coursework, submissions and announcements as one JSON. Fallback: an OAuth
-token (~/.dz/google-token.json) and the official Classroom API. Read-only."""
+"""Google Classroom. Main path: your own Apps Script web app (its URL with the secret key is in the
+system keychain) that returns all courses, coursework, submissions and announcements as one JSON.
+Fallback: an OAuth refresh token (also in the keychain) and the official Classroom API. Read-only."""
 
 import json
 from datetime import datetime, timedelta, timezone
 
 import requests
 
-from .config import Config, read_secret, secret_path
+from . import keystore
+from .config import Config, read_secret
+from .security import require_host
 from .models import CLASSROOM, NEW, UNCLEAR, Notice, Task
 from .textitems import text_to_item
 from .textparse import canonical_subject
@@ -17,13 +19,15 @@ SUBMITTED_STATES = {"TURNED_IN", "RETURNED"}
 
 
 def available() -> bool:
-    return secret_path("CLASSROOM_URL_FILE").exists() or secret_path("CLASSROOM_TOKEN_FILE").exists()
+    return keystore.has("CLASSROOM_URL_FILE") or keystore.has("CLASSROOM_TOKEN_FILE")
 
 
 def fetch_dump() -> dict:
     url = read_secret("CLASSROOM_URL_FILE")
     if url:
+        require_host(url, ("script.google.com",), "Classroom web app URL")
         resp = requests.get(url, timeout=360)  # Apps Script redirects to googleusercontent
+        require_host(resp.url, ("google.com", "googleusercontent.com"), "Classroom redirect")
         resp.raise_for_status()
         try:
             data = resp.json()
@@ -36,9 +40,9 @@ def fetch_dump() -> dict:
 
 
 def _dump_via_api() -> dict:
-    client = json.loads(secret_path("CLASSROOM_CLIENT_FILE").read_text())
+    client = json.loads(keystore.get("CLASSROOM_CLIENT_FILE") or "{}")
     client = client.get("installed") or client.get("web")
-    token = json.loads(secret_path("CLASSROOM_TOKEN_FILE").read_text())
+    token = json.loads(keystore.get("CLASSROOM_TOKEN_FILE") or "{}")
     access = requests.post("https://oauth2.googleapis.com/token", timeout=60, data={
         "client_id": client["client_id"], "client_secret": client["client_secret"],
         "refresh_token": token["refresh_token"], "grant_type": "refresh_token",

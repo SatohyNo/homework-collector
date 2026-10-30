@@ -7,13 +7,22 @@ teacher often writes "This is the assignment for the test" and then posts the pd
 Your own messages with files in all chats are also read, to hide work you already submitted.
 """
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from .config import Config
 from .models import TELEGRAM, Notice, Submission, Task
 from .textitems import text_to_item
-from .textparse import ASSIGNMENT_RE, file_names_task, guess_subjects, looks_like_assignment
+from .textparse import (
+    ASSIGNMENT_RE,
+    extract_deadline,
+    file_names_task,
+    guess_subjects,
+    is_directive,
+    is_optional,
+    looks_like_assignment,
+)
 
 GROUP_GAP = timedelta(minutes=30)  # a teacher's text, files and clarifications during one class
 SUBMISSIONS_DAYS = 14
@@ -26,6 +35,7 @@ class Post:
     first: datetime
     last: datetime
     msg_id: int
+    is_reply: bool = False  # every message of the post answers someone else's message
     texts: list[str] = field(default_factory=list)
     files: list[str] = field(default_factory=list)
 
@@ -46,6 +56,15 @@ def _topic_id(msg) -> int:
     if rt and getattr(rt, "forum_topic", False):
         return rt.reply_to_top_id or rt.reply_to_msg_id
     return 1
+
+
+def _is_reply(msg) -> bool:
+    """A reply to another message. In a topic, a plain message also points at the topic
+    (reply_to_msg_id = topic id, reply_to_top_id = None), which is not a reply."""
+    rt = msg.reply_to
+    if not rt or not getattr(rt, "reply_to_msg_id", None):
+        return False
+    return not (getattr(rt, "forum_topic", False) and rt.reply_to_top_id is None)
 
 
 async def _topic_titles(client, entity) -> dict[int, str]:
@@ -76,15 +95,34 @@ async def _admin_ids(client, entity) -> set[int]:
         return set()
 
 
-async def collect(api_id: int, api_hash: str, session: str, cfg: Config, now: datetime, warn
-                  ) -> tuple[list[Task], list[Notice], list[Submission]]:
-    from telethon import TelegramClient, utils
+def make_client(warn=None):
+    """Telegram client whose api keys and session come from the system keychain (no session file).
+    None if Telegram is not set up yet."""
+    from telethon import TelegramClient
+    from telethon.sessions import StringSession
+
+    from . import keystore
+
+    keys = keystore.get("TG_CONFIG_FILE", warn)
+    session = keystore.get("TG_SESSION_FILE", warn)
+    if not keys or not session:
+        return None
+    keys = json.loads(keys)
+    return TelegramClient(StringSession(session), int(keys["api_id"]), keys["api_hash"])
+
+
+async def collect(client, cfg: Config, now: datetime, warn) -> tuple[list[Task], list[Notice], list[Submission]]:
+    from telethon import utils
 
     tasks: list[Task] = []
     notices: list[Notice] = []
     since = now - timedelta(days=cfg.days_back)
 
-    async with TelegramClient(session, api_id, api_hash) as client:  # the first run asks for phone and code
+    async with client:
+        if not await client.is_user_authorized():
+            raise RuntimeError("the Telegram session has expired, run `python -m dz.setup telegram`")
+        # a keychain session keeps no cache of chats; loading the dialog list fills it, so ids resolve
+        await client.get_dialogs()
         for entry in cfg.telegram_chats:
             try:
                 entity = await _resolve(client, entry["chat"])
@@ -106,7 +144,7 @@ async def collect(api_id: int, api_hash: str, session: str, cfg: Config, now: da
                             or msg.sender_id == chat_id)
                 if not official or msg.via_bot_id:
                     continue
-                p = Post(msg.sender_id, _topic_id(msg), msg.date, msg.date, msg.id)
+                p = Post(msg.sender_id, _topic_id(msg), msg.date, msg.date, msg.id, is_reply=_is_reply(msg))
                 if msg.message:
                     p.texts.append(msg.message)
                 if name := _file_name(msg):
@@ -124,6 +162,7 @@ async def collect(api_id: int, api_hash: str, session: str, cfg: Config, now: da
                     prev.texts += p.texts
                     prev.files += p.files
                     prev.last = p.first
+                    prev.is_reply = prev.is_reply and p.is_reply
                 else:
                     merged.append(p)
                     last_of[key] = p
@@ -133,6 +172,16 @@ async def collect(api_id: int, api_hash: str, session: str, cfg: Config, now: da
                 text = p.text()
                 # only files and no assignment words: the file name itself must name a kind of work
                 if not looks_like_assignment("\n".join(p.texts)) and not file_names_task(p.files):
+                    continue
+                # answers in a conversation ("I haven't heard anything about lab 3") are not assignments,
+                # unless they give a concrete date
+                if p.is_reply and not extract_deadline(text, p.first, cfg.tz).found_anything:
+                    continue
+                written = "\n".join(p.texts)
+                if is_optional(written):
+                    continue
+                # general class chat: the post must tell you to do something, or carry a task file
+                if not entry.get("subject") and not is_directive(written) and not file_names_task(p.files):
                     continue
                 url = f"https://t.me/{username}/{p.msg_id}" if username else None
                 # a chat-level subject wins; in a general chat with topics the topic name gives the subject
@@ -193,11 +242,9 @@ async def _resolve(client, chat):
     raise LookupError("no dialog with this name")
 
 
-async def send_to_saved(api_id: int, api_hash: str, session: str, text: str) -> None:
+async def send_to_saved(client, text: str) -> None:
     """Sends the text to your own Saved Messages, nobody else."""
-    from telethon import TelegramClient
-
-    async with TelegramClient(session, api_id, api_hash) as client:
+    async with client:
         # Telegram limit is 4096 characters; split by lines
         chunk = ""
         for line in text.split("\n"):

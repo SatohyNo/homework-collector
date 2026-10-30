@@ -32,7 +32,7 @@ def scan(cfg: Config, warn) -> list[Submission]:
         if not base.is_dir():
             continue
         for f in base.rglob("*"):
-            if not f.is_file() or f.name.startswith(".") or f.suffix.lower() in SKIP_SUFFIXES:
+            if f.is_symlink() or not f.is_file() or f.name.startswith(".") or f.suffix.lower() in SKIP_SUFFIXES:
                 continue
             rel = f.relative_to(base)
             if any(part.lower() in ignore for part in rel.parts[:-1]):

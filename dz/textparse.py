@@ -93,6 +93,28 @@ def file_names_task(names: list[str]) -> bool:
                for n in names)
 
 
+# In a general class chat classmates and the class representative talk about labs all the time
+# ("I haven't heard about lab 3"). There a post must actually tell you to do something.
+DIRECTIVE_RE = re.compile(
+    r"(?<!\w)(дз|д/з|домашн\w*|задан[оі]|задали|задал[аи]?|здати|здавати|здаємо|сдать|сдавать|сдаем|"
+    r"зробити|сделать|делать|виконати|выполнить|підготувати|подготовить|опрацювати|написати|написать|"
+    r"накреслити|креслити|розв'?язати|решить|прочитати|прочитать|вивчити|выучить|дедлайн\w*|термін\w*|"
+    r"срок\w*|треба|потрібно|необхідно|нужно|надо|classtime)(?!\w)",
+    re.IGNORECASE,
+)
+# optional things ("you can prepare theses for the conference") are not homework
+OPTIONAL_RE = re.compile(r"(?<!\w)(можете|можна за бажанням|за бажанням|по бажанню|по желанию)(?!\w)",
+                         re.IGNORECASE)
+
+
+def is_directive(text: str) -> bool:
+    return bool(DIRECTIVE_RE.search(text or ""))
+
+
+def is_optional(text: str) -> bool:
+    return bool(OPTIONAL_RE.search(text or ""))
+
+
 def looks_like_assignment(text: str) -> bool:
     t = (text or "").strip()
     if not ASSIGNMENT_RE.search(t.replace("_", " ")):  # file names: "ЛР3_звіт.pdf"
@@ -121,9 +143,38 @@ def _infer_year(day: int, month: int, posted: date) -> date | None:
     return None
 
 
+# "таблиця 6.1", "пункт 2.3", "рис. 4.5", "тема 3.2", "№ 1.12" are references, not dates
+NOT_A_DATE_BEFORE_RE = re.compile(
+    r"(таблиц\w*|табл\.?|рис\w*\.?|пункт\w*|п\.|розділ\w*|раздел\w*|§|стор\.?|с\.|№|вправ\w*|"
+    r"упражнени\w*|задач\w*|тем[аиуы]|варіант\w*|вариант\w*|формул\w*|параграф\w*)\s*$",
+    re.IGNORECASE,
+)
+
+# "дедлайн 2 тижні", "термін 3 дні", "срок неделя": a period counted from the message date
+PERIOD_RE = re.compile(
+    r"(?:дедлайн|deadline|термін|срок|на виконання|здати за|сдать за)\W{0,3}"
+    r"(\d{1,2}|один|одна|одну|два|дві|две|три|чотири|четыре)?\s*"
+    r"(тиж\w*|недел\w*|дн\w*|день|дня)",
+    re.IGNORECASE,
+)
+_NUMBER_WORDS = {"один": 1, "одна": 1, "одну": 1, "два": 2, "дві": 2, "две": 2, "три": 3, "чотири": 4, "четыре": 4}
+
+
+def _period_deadline(text: str, posted: date) -> date | None:
+    m = PERIOD_RE.search(text)
+    if not m:
+        return None
+    raw = (m.group(1) or "1").lower()
+    n = int(raw) if raw.isdigit() else _NUMBER_WORDS[raw]
+    weeks = m.group(2).lower().startswith(("тиж", "недел"))
+    return posted + timedelta(days=n * 7 if weeks else n)
+
+
 def _find_dates(text: str, posted: date) -> list[tuple[int, date]]:
     found: list[tuple[int, date]] = []
     for m in NUM_DATE_RE.finditer(text):
+        if NOT_A_DATE_BEFORE_RE.search(text[max(0, m.start() - 20):m.start()]):
+            continue
         day, month, year = int(m.group(1)), int(m.group(2)), m.group(3)
         if not (1 <= day <= 31 and 1 <= month <= 12):
             continue
@@ -179,6 +230,8 @@ def extract_deadline(text: str, posted: datetime, tz: ZoneInfo) -> ParsedDeadlin
     the_date, uniq_dates = _pick(dates, text)
     the_time, uniq_times = _pick(times, text)
     res.all_dates = uniq_dates
+    if not uniq_dates and (period := _period_deadline(text, posted_local.date())):
+        the_date, uniq_dates = period, [period]
     res.found_anything = bool(uniq_dates or uniq_times)
     if not res.found_anything:
         return res
